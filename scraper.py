@@ -24,13 +24,15 @@ async def _scrape(site_name: str, url: str, keywords: list[str]) -> dict:
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                 'AppleWebKit/537.36 (KHTML, like Gecko) '
                 'Chrome/124.0.0.0 Safari/537.36'
-            )
+            ),
+            locale='ja-JP',
         )
         page = await context.new_page()
 
         try:
-            await page.goto(url, timeout=30000)
-            await page.wait_for_load_state('domcontentloaded')
+            await page.goto(url, timeout=60000, wait_until='domcontentloaded')
+            # JS描画を待つ
+            await page.wait_for_timeout(3000)
 
             searched = False
             for selector in SEARCH_SELECTORS:
@@ -39,16 +41,25 @@ async def _scrape(site_name: str, url: str, keywords: list[str]) -> dict:
                     if element and await element.is_visible():
                         await element.fill(keyword_str)
                         await page.keyboard.press('Enter')
-                        await page.wait_for_load_state('networkidle', timeout=10000)
+                        await page.wait_for_load_state('networkidle', timeout=15000)
+                        await page.wait_for_timeout(2000)
                         searched = True
                         break
                 except Exception:
                     continue
 
+            # ページ全体のテキストを取得
             content = await page.inner_text('body')
+
+            # 取得量が少なすぎる場合はスクロールして再取得
+            if len(content) < 500:
+                await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                await page.wait_for_timeout(2000)
+                content = await page.inner_text('body')
+
             return {
                 'site_name': site_name,
-                'content': content[:10000],
+                'content': content[:12000],
                 'url': page.url,
                 'searched': searched,
             }
