@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from sheets import get_job_sites, get_keywords, ensure_result_header, write_results
+from sheets import get_job_sites, get_search_config, ensure_result_header, write_results
 from scraper import scrape_all
 from agent import process_all
 
@@ -11,7 +11,9 @@ def main():
 
     print('\n[1/4] Google Sheetsから設定を読み込み中...')
     sites = get_job_sites()
-    keywords = get_keywords()
+    config = get_search_config()
+    keywords = config['keywords']
+    min_hourly_wage = config['min_hourly_wage']
 
     if not sites:
         print('求人サイト一覧が空です。Google Sheetsの「求人サイト一覧」シートを確認してください。')
@@ -24,12 +26,14 @@ def main():
     for s in sites:
         print(f'    - {s["name"]}: {s["url"]}')
     print(f'  検索キーワード: {keywords}')
+    if min_hourly_wage:
+        print(f'  最低時給: {min_hourly_wage}円')
 
     print('\n[2/4] 求人サイトをスクレイピング中...')
     scraped = scrape_all(sites, keywords)
 
     print('\n[3/4] AIで求人を解析・フィルタリング中...')
-    jobs = process_all(scraped, keywords)
+    jobs = process_all(scraped, keywords, min_hourly_wage)
 
     print(f'\n合計 {len(jobs)}件のリモート求人が見つかりました')
 

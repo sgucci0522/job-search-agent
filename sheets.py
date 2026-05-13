@@ -48,13 +48,32 @@ def get_job_sites() -> list[dict]:
     return [{'name': row[0], 'url': row[1]} for row in values if len(row) >= 2]
 
 
-def get_keywords() -> list[str]:
+def get_search_config() -> dict:
+    """検索条件シートからキーワードとフィルター条件を取得する。
+    通常行はキーワード、「最低時給:1500」形式はフィルター条件として解釈する。"""
     result = get_service().spreadsheets().values().get(
         spreadsheetId=_get_spreadsheet_id(),
         range='検索条件!A2:A',
     ).execute()
     values = result.get('values', [])
-    return [row[0] for row in values if row]
+
+    keywords = []
+    min_hourly_wage = None
+
+    for row in values:
+        if not row:
+            continue
+        val = row[0].strip()
+        if val.startswith('最低時給:'):
+            raw = val.replace('最低時給:', '').replace('円', '').strip()
+            try:
+                min_hourly_wage = int(raw)
+            except ValueError:
+                print(f'警告: 最低時給の値が不正です → {val}')
+        else:
+            keywords.append(val)
+
+    return {'keywords': keywords, 'min_hourly_wage': min_hourly_wage}
 
 
 def ensure_result_header():

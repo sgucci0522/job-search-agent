@@ -8,15 +8,18 @@ load_dotenv()
 client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
 
-def _extract_jobs(scraped: dict, keywords: list[str]) -> list[dict]:
+def _extract_jobs(scraped: dict, keywords: list[str], min_hourly_wage: int | None = None) -> list[dict]:
     if not scraped.get('content'):
         return []
 
+    wage_condition = f'- 時給が{min_hourly_wage}円以上のもの\n' if min_hourly_wage else ''
+
     prompt = f"""以下は求人サイト「{scraped['site_name']}」から取得したテキストです。
 
-このテキストから求人情報を抽出し、在宅・リモート・テレワークで働ける求人だけをフィルタリングしてください。
-
-各求人を以下のキーを持つJSONオブジェクトで表してください：
+このテキストから求人情報を抽出し、以下の条件でフィルタリングしてください：
+- 在宅・リモート・テレワークで働ける求人のみ
+{wage_condition}
+各求人について以下の情報をJSON形式で返してください：
 - title: 求人タイトル
 - company: 会社名
 - location: 勤務地
@@ -58,11 +61,11 @@ def _extract_jobs(scraped: dict, keywords: list[str]) -> list[dict]:
         return []
 
 
-def process_all(scraped_list: list[dict], keywords: list[str]) -> list[dict]:
+def process_all(scraped_list: list[dict], keywords: list[str], min_hourly_wage: int | None = None) -> list[dict]:
     all_jobs = []
     for scraped in scraped_list:
         print(f'  AI解析: {scraped["site_name"]}')
-        jobs = _extract_jobs(scraped, keywords)
+        jobs = _extract_jobs(scraped, keywords, min_hourly_wage)
         print(f'    リモート求人: {len(jobs)}件')
         all_jobs.extend(jobs)
     return all_jobs
