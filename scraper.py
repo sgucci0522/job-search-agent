@@ -77,15 +77,20 @@ async def _extract_text_with_links(page, base_url: str = '') -> str:
     # 数字IDで終わるURLのみ抽出（カテゴリ・ナビリンクを除外）
     links = await page.evaluate("""
         () => {
+            const CLOSED_PATTERN = /募集終了|応募終了|受付終了|終了しました|クローズ|募集を終了|この求人は終了/;
             return Array.from(document.querySelectorAll('a[href]'))
                 .filter(a => {
                     const href = a.href || '';
                     const label = a.innerText.trim();
                     // 5桁以上の数字IDで終わり、求人パスを含み、非求人URLを除外
-                    return /\\/\\d{5,}$/.test(href) &&
-                           /\\/(jobs?|offers?|works?|recruit|kyujin)\\//i.test(href) &&
-                           !/\\/(category|group|search|tag|page|type|employer|company|profile|user)\\//i.test(href) &&
-                           label.length > 2 && label.length < 120;
+                    if (!/\\/\\d{5,}$/.test(href)) return false;
+                    if (!/\\/(jobs?|offers?|works?|recruit|kyujin)\\//i.test(href)) return false;
+                    if (/\\/(category|group|search|tag|page|type|employer|company|profile|user)\\//i.test(href)) return false;
+                    if (label.length < 2 || label.length > 120) return false;
+                    // 求人カード内に「募集終了」等のテキストがあれば除外
+                    const card = a.closest('li, article, [class*="job"], [class*="card"], [class*="item"]') || a.parentElement;
+                    if (card && CLOSED_PATTERN.test(card.innerText)) return false;
+                    return true;
                 })
                 .map(a => ({ text: a.innerText.trim().replace(/\\s+/g, ' '), href: a.href }))
                 .filter((v, i, arr) => arr.findIndex(x => x.href === v.href) === i) // 重複除去

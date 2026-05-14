@@ -17,8 +17,13 @@ def _extract_jobs(scraped: dict, keywords: list[str], min_hourly_wage: int | Non
     prompt = f"""以下は求人サイト「{scraped['site_name']}」から取得したテキストです。
 
 このテキストから求人情報を抽出し、以下の条件でフィルタリングしてください：
+【含める条件】
 - 在宅・リモート・テレワークで働ける求人のみ
 {wage_condition}
+【除外する条件】
+- 募集終了・応募締め切り・受付終了・クローズ・終了済みの求人は除外
+- 「募集を終了」「応募受付終了」「この求人は終了」などの記載がある求人は除外
+
 各求人について以下の情報をJSON形式で返してください：
 - title: 求人タイトル
 - company: 会社名
