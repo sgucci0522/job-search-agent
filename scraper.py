@@ -22,16 +22,62 @@ INDEED_JOB_SELECTORS = [
     '#mosaic-provider-jobcards',
 ]
 
+# 募集終了を示す文言（個別ページで検出）
+CLOSED_PATTERNS = [
+    '募集終了', '応募受付終了', '受付終了', 'この仕事は終了',
+    '応募を終了', '募集を終了', '募集期間が終了', 'この求人は終了',
+    '応募受付を終了', '応募が終了', '終了しました', '募集は終了',
+    'no longer available', 'job has expired', 'この求人情報は削除',
+    '応募期間が過ぎ', 'この求人の掲載は終了',
+]
+
 ANTI_BOT_SCRIPT = """
 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
 Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
 Object.defineProperty(navigator, 'languages', { get: () => ['ja-JP', 'ja'] });
 """
 
+MAX_JOBS_TO_VERIFY = 15  # 1サイトあたり最大確認件数
 
-async def _extract_indeed_content(page) -> str:
-    """Indeed: 求人カードから data-jk を使った安定URLで構造化テキストを抽出"""
-    jobs = await page.evaluate("""
+
+async def _is_active(page, url: str) -> bool:
+    """個別求人ページを訪問して募集終了かチェック"""
+    try:
+        await page.goto(url, timeout=15000, wait_until='domcontentloaded')
+        await page.wait_for_timeout(600)
+        body = await page.inner_text('body')
+        return not any(pat in body for pat in CLOSED_PATTERNS)
+    except Exception:
+        return True  # アクセス不能の場合は含める
+
+
+async def _extract_candidate_links(page) -> list:
+    """検索結果ページから求人候補リンクを抽出"""
+    return await page.evaluate("""
+        () => {
+            const CLOSED = /募集終了|応募終了|受付終了|終了しました|クローズ/;
+            return Array.from(document.querySelectorAll('a[href]'))
+                .filter(a => {
+                    const href = a.href || '';
+                    const label = a.innerText.trim();
+                    if (!/\\/\\d{5,}$/.test(href)) return false;
+                    if (!/\\/(jobs?|offers?|works?|recruit|kyujin)\\//i.test(href)) return false;
+                    if (/\\/(category|group|search|tag|page|type|employer|company|profile|user)\\//i.test(href)) return false;
+                    if (label.length < 2 || label.length > 120) return false;
+                    const card = a.closest('li, article, [class*="job"], [class*="card"], [class*="item"]') || a.parentElement;
+                    if (card && CLOSED.test(card.innerText)) return false;
+                    return true;
+                })
+                .map(a => ({ text: a.innerText.trim().replace(/\\s+/g, ' '), href: a.href }))
+                .filter((v, i, arr) => arr.findIndex(x => x.href === v.href) === i)
+                .slice(0, 30);
+        }
+    """)
+
+
+async def _extract_indeed_jobs(page) -> list:
+    """Indeed求人カードからURLを含む構造化データを抽出"""
+    return await page.evaluate("""
         () => {
             const cards = document.querySelectorAll(
                 '[data-jk], .job_seen_beacon, [data-testid="job-card"], .resultWithShelf'
@@ -41,7 +87,6 @@ async def _extract_indeed_content(page) -> str:
                            (card.querySelector('[data-jk]') || {}).getAttribute('data-jk') || '';
                 const titleEl = card.querySelector('h2 a, [data-testid="job-title"] a, .jcs-JobTitle a');
                 const title = titleEl ? titleEl.innerText.trim() : '';
-                // data-jk があれば viewjob URL を構築（広告トラッキングURLを避ける）
                 const href = jk ? 'https://jp.indeed.com/viewjob?jk=' + jk
                                  : (titleEl ? titleEl.href : '');
                 const company = (card.querySelector('.companyName, [data-testid="company-name"]') || {}).innerText || '';
@@ -49,57 +94,9 @@ async def _extract_indeed_content(page) -> str:
                 const salary = (card.querySelector('.salary-snippet, .metadata.salary-snippet-container, [data-testid="attribute_snippet_testid"]') || {}).innerText || '';
                 const desc = (card.querySelector('.job-snippet, [data-testid="job-snippet"]') || {}).innerText || '';
                 return { title, href, company, location, salary, desc };
-            }).filter(j => j.title);
+            }).filter(j => j.title && j.href);
         }
     """)
-
-    if not jobs:
-        # フォールバック: ページテキスト + リンク一覧
-        return await _extract_text_with_links(page, 'https://jp.indeed.com')
-
-    lines = []
-    for job in jobs:
-        lines.append(
-            f"タイトル: {job.get('title', '')}\n"
-            f"会社: {job.get('company', '')}\n"
-            f"場所: {job.get('location', '')}\n"
-            f"給与: {job.get('salary', '')}\n"
-            f"説明: {job.get('desc', '')[:200]}\n"
-            f"URL: {job.get('href', '')}\n---"
-        )
-    return '\n'.join(lines)
-
-
-async def _extract_text_with_links(page, base_url: str = '') -> str:
-    """ページテキスト + 数字IDで終わる求人リンク一覧を返す"""
-    text = await page.inner_text('body')
-
-    # 数字IDで終わるURLのみ抽出（カテゴリ・ナビリンクを除外）
-    links = await page.evaluate("""
-        () => {
-            const CLOSED_PATTERN = /募集終了|応募終了|受付終了|終了しました|クローズ|募集を終了|この求人は終了/;
-            return Array.from(document.querySelectorAll('a[href]'))
-                .filter(a => {
-                    const href = a.href || '';
-                    const label = a.innerText.trim();
-                    // 5桁以上の数字IDで終わり、求人パスを含み、非求人URLを除外
-                    if (!/\\/\\d{5,}$/.test(href)) return false;
-                    if (!/\\/(jobs?|offers?|works?|recruit|kyujin)\\//i.test(href)) return false;
-                    if (/\\/(category|group|search|tag|page|type|employer|company|profile|user)\\//i.test(href)) return false;
-                    if (label.length < 2 || label.length > 120) return false;
-                    // 求人カード内に「募集終了」等のテキストがあれば除外
-                    const card = a.closest('li, article, [class*="job"], [class*="card"], [class*="item"]') || a.parentElement;
-                    if (card && CLOSED_PATTERN.test(card.innerText)) return false;
-                    return true;
-                })
-                .map(a => ({ text: a.innerText.trim().replace(/\\s+/g, ' '), href: a.href }))
-                .filter((v, i, arr) => arr.findIndex(x => x.href === v.href) === i) // 重複除去
-                .slice(0, 60);
-        }
-    """)
-
-    link_section = '\n'.join(f'{lk["text"]} → {lk["href"]}' for lk in links)
-    return f'{text[:8000]}\n\n--- 実際の求人リンク（このURLのみ使用すること）---\n{link_section}'
 
 
 async def _scrape(site_name: str, url: str, keywords: list[str], is_indeed: bool = False) -> dict:
@@ -126,6 +123,7 @@ async def _scrape(site_name: str, url: str, keywords: list[str], is_indeed: bool
             await page.goto(url, timeout=60000, wait_until='domcontentloaded')
 
             if is_indeed:
+                # Indeed: 求人カード描画を待機
                 for sel in INDEED_JOB_SELECTORS:
                     try:
                         await page.wait_for_selector(sel, timeout=15000)
@@ -134,28 +132,76 @@ async def _scrape(site_name: str, url: str, keywords: list[str], is_indeed: bool
                         continue
                 else:
                     await page.wait_for_timeout(5000)
-                content = await _extract_indeed_content(page)
+
+                jobs = await _extract_indeed_jobs(page)
+                jobs = [j for j in jobs if j.get('href')][:MAX_JOBS_TO_VERIFY]
+
+                # 個別ページを訪問して募集終了を除外
+                active_jobs = []
+                for job in jobs:
+                    ok = await _is_active(page, job['href'])
+                    if ok:
+                        active_jobs.append(job)
+                    else:
+                        print(f'      除外(募集終了): {job["title"][:30]}')
+
+                lines = [
+                    f"タイトル: {j.get('title','')}\n"
+                    f"会社: {j.get('company','')}\n"
+                    f"場所: {j.get('location','')}\n"
+                    f"給与: {j.get('salary','')}\n"
+                    f"説明: {j.get('desc','')[:200]}\n"
+                    f"URL: {j.get('href','')}\n---"
+                    for j in active_jobs
+                ]
+                content = '\n'.join(lines)
+
             else:
                 await page.wait_for_timeout(3000)
+
+                # 検索ボックスがあれば検索実行
                 for selector in SEARCH_SELECTORS:
                     try:
-                        element = await page.query_selector(selector)
-                        if element and await element.is_visible():
-                            await element.fill(keyword_str)
+                        el = await page.query_selector(selector)
+                        if el and await el.is_visible():
+                            await el.fill(keyword_str)
                             await page.keyboard.press('Enter')
                             await page.wait_for_load_state('networkidle', timeout=15000)
                             await page.wait_for_timeout(2000)
                             break
                     except Exception:
                         continue
-                content = await _extract_text_with_links(page)
+
+                # 検索結果ページのテキストを先に保存
+                search_text = await page.inner_text('body')
+
+                # 候補リンクを抽出
+                candidates = await _extract_candidate_links(page)
+                candidates = candidates[:MAX_JOBS_TO_VERIFY]
+
+                # 個別ページを訪問して募集終了を除外
+                active_links = []
+                for lk in candidates:
+                    ok = await _is_active(page, lk['href'])
+                    if ok:
+                        active_links.append(lk)
+                    else:
+                        print(f'      除外(募集終了): {lk["text"][:30]}')
+
+                link_section = '\n'.join(f'{lk["text"]} → {lk["href"]}' for lk in active_links)
+                content = (
+                    f'{search_text[:6000]}\n\n'
+                    f'--- 募集中の求人リンク（このURLのみ使用すること）---\n'
+                    f'{link_section}'
+                )
 
             return {
                 'site_name': site_name,
                 'content': content[:12000],
-                'url': page.url,
+                'url': url,
                 'searched': True,
             }
+
         except Exception as e:
             return {
                 'site_name': site_name,
@@ -183,14 +229,13 @@ def scrape_all(sites: list[dict], keywords: list[str]) -> list[dict]:
 
             result = asyncio.run(_scrape(site['name'], site['url'], keywords, is_indeed))
 
-            if result.get('content') and len(result['content']) >= 200:
+            if result.get('content') and len(result['content']) >= 100:
                 break
 
         if 'error' in result and not result.get('content'):
             print(f'    エラー: {result["error"]}')
         else:
-            status = '検索あり' if result.get('searched') else '検索なし'
-            print(f'    完了 ({status}, {len(result["content"])}文字取得)')
+            print(f'    完了 ({len(result["content"])}文字取得)')
 
         results.append(result)
     return results
