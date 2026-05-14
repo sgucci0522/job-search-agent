@@ -25,8 +25,11 @@ def _extract_jobs(scraped: dict, keywords: list[str], min_hourly_wage: int | Non
 - location: 勤務地
 - employment_type: 雇用形態
 - salary: 給与・報酬（不明なら空文字）
-- url: 求人URL（不明なら空文字）
+- url: 求人URL（テキスト末尾の「実際の求人リンク」欄にあるURLのみ使用。なければ空文字）
 - remote_judgment: リモート可と判断した理由（1行）
+
+【重要】urlは必ずテキスト中の「実際の求人リンク」欄に記載されたURLをそのままコピーしてください。
+URLを推測・生成・変形しないでください。リンク欄にないURLは空文字にしてください。
 
 必ず {{"jobs": [...]}} の形式のJSONのみを返してください。
 求人が見つからない場合は {{"jobs": []}} を返してください。

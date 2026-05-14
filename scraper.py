@@ -71,27 +71,30 @@ async def _extract_indeed_content(page) -> str:
 
 
 async def _extract_text_with_links(page, base_url: str = '') -> str:
-    """ページテキスト + 求人関連リンクの一覧を返す"""
+    """ページテキスト + 数字IDで終わる求人リンク一覧を返す"""
     text = await page.inner_text('body')
 
-    # 求人っぽいリンクを抽出（href属性から直接取得）
+    # 数字IDで終わるURLのみ抽出（カテゴリ・ナビリンクを除外）
     links = await page.evaluate("""
-        (baseUrl) => {
-            const keywords = ['job', 'work', 'career', 'recruit', '求人', '仕事', 'apply'];
+        () => {
             return Array.from(document.querySelectorAll('a[href]'))
                 .filter(a => {
                     const href = a.href || '';
-                    const text = a.innerText.trim();
-                    return text.length > 2 && text.length < 100 &&
-                           keywords.some(k => href.includes(k) || text.includes(k));
+                    const label = a.innerText.trim();
+                    // 5桁以上の数字IDで終わり、求人パスを含み、非求人URLを除外
+                    return /\\/\\d{5,}$/.test(href) &&
+                           /\\/(jobs?|offers?|works?|recruit|kyujin)\\//i.test(href) &&
+                           !/\\/(category|group|search|tag|page|type|employer|company|profile|user)\\//i.test(href) &&
+                           label.length > 2 && label.length < 120;
                 })
-                .map(a => ({ text: a.innerText.trim(), href: a.href }))
-                .slice(0, 50);
+                .map(a => ({ text: a.innerText.trim().replace(/\\s+/g, ' '), href: a.href }))
+                .filter((v, i, arr) => arr.findIndex(x => x.href === v.href) === i) // 重複除去
+                .slice(0, 60);
         }
-    """, base_url)
+    """)
 
     link_section = '\n'.join(f'{lk["text"]} → {lk["href"]}' for lk in links)
-    return f'{text[:8000]}\n\n--- 求人リンク ---\n{link_section}'
+    return f'{text[:8000]}\n\n--- 実際の求人リンク（このURLのみ使用すること）---\n{link_section}'
 
 
 async def _scrape(site_name: str, url: str, keywords: list[str], is_indeed: bool = False) -> dict:
