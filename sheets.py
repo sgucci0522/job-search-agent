@@ -11,8 +11,9 @@ SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 _service = None
 
 # 結果シートの列定義
-RESULT_COLUMNS = ['求人サイト', 'タイトル', '会社名', '勤務地', '雇用形態', '給与', 'URL', '取得日時', 'リモート判定', '応募状況']
-COL_STATUS = 9  # J列（0始まり）= 応募状況
+RESULT_COLUMNS = ['求人サイト', 'タイトル', '会社名', '勤務地', '雇用形態', '給与', '応募期限', 'URL', '取得日時', 'リモート判定', '応募状況']
+COL_STATUS = 10  # K列（0始まり）= 応募状況
+COL_URL = 7      # H列（0始まり）= URL
 
 
 def get_service():
@@ -83,7 +84,7 @@ def get_search_config() -> dict:
 def ensure_result_header():
     get_service().spreadsheets().values().update(
         spreadsheetId=_get_spreadsheet_id(),
-        range='結果!A1:J1',
+        range='結果!A1:K1',
         valueInputOption='RAW',
         body={'values': [RESULT_COLUMNS]},
     ).execute()
@@ -93,14 +94,13 @@ def _get_kept_rows() -> list[list]:
     """応募状況が入力済みの行を取得して保持する"""
     result = get_service().spreadsheets().values().get(
         spreadsheetId=_get_spreadsheet_id(),
-        range='結果!A2:J',
+        range='結果!A2:K',
     ).execute()
     rows = result.get('values', [])
     kept = []
     for row in rows:
-        # J列（index 9）に値があれば保持
+        # K列（index 10）に値があれば保持
         if len(row) > COL_STATUS and row[COL_STATUS].strip():
-            # 10列に満たない場合は空文字で埋める
             while len(row) < len(RESULT_COLUMNS):
                 row.append('')
             kept.append(row)
@@ -116,11 +116,11 @@ def write_results(jobs: list[dict]):
     # シートクリア
     get_service().spreadsheets().values().clear(
         spreadsheetId=sid,
-        range='結果!A2:J',
+        range='結果!A2:K',
     ).execute()
 
     # 応募状況保持行のURLセット（重複除外用）
-    kept_urls = {row[6] for row in kept_rows if len(row) > 6 and row[6]}
+    kept_urls = {row[COL_URL] for row in kept_rows if len(row) > COL_URL and row[COL_URL]}
 
     new_rows = [
         [
@@ -130,13 +130,14 @@ def write_results(jobs: list[dict]):
             job.get('location', ''),
             job.get('employment_type', ''),
             job.get('salary', ''),
+            job.get('deadline', ''),
             job.get('url', ''),
             job.get('fetched_at', ''),
             job.get('remote_judgment', ''),
             '',  # 応募状況（空欄）
         ]
         for job in jobs
-        if job.get('url') not in kept_urls  # 応募状況保持済みURLは除外
+        if job.get('url') not in kept_urls
     ]
 
     all_rows = kept_rows + new_rows

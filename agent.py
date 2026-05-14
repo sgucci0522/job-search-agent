@@ -14,7 +14,11 @@ def _extract_jobs(scraped: dict, keywords: list[str], min_hourly_wage: int | Non
 
     wage_condition = f'- 時給が{min_hourly_wage}円以上のもの\n' if min_hourly_wage else ''
 
+    today = datetime.now().strftime('%Y-%m-%d')
+
     prompt = f"""以下は求人サイト「{scraped['site_name']}」から取得したテキストです。
+
+本日の日付: {today}
 
 このテキストから求人情報を抽出し、以下の条件でフィルタリングしてください：
 【含める条件】
@@ -23,6 +27,7 @@ def _extract_jobs(scraped: dict, keywords: list[str], min_hourly_wage: int | Non
 【除外する条件】
 - 募集終了・応募締め切り・受付終了・クローズ・終了済みの求人は除外
 - 「募集を終了」「応募受付終了」「この求人は終了」などの記載がある求人は除外
+- 応募期限・締め切り日が本日（{today}）より前の求人は除外
 
 各求人について以下の情報をJSON形式で返してください：
 - title: 求人タイトル
@@ -30,6 +35,7 @@ def _extract_jobs(scraped: dict, keywords: list[str], min_hourly_wage: int | Non
 - location: 勤務地
 - employment_type: 雇用形態
 - salary: 給与・報酬（不明なら空文字）
+- deadline: 応募期限・締め切り日（YYYY-MM-DD形式。記載なければ空文字）
 - url: 求人URL（テキスト末尾の「実際の求人リンク」欄にあるURLのみ使用。なければ空文字）
 - remote_judgment: リモート可と判断した理由（1行）
 
