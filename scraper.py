@@ -15,7 +15,6 @@ SEARCH_SELECTORS = [
     'input[placeholder*="求人"]',
 ]
 
-# Indeed求人カードのセレクタ（いずれかが見つかれば描画完了）
 INDEED_JOB_SELECTORS = [
     '.job_seen_beacon',
     '[data-testid="job-card"]',
@@ -28,6 +27,71 @@ Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
 Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
 Object.defineProperty(navigator, 'languages', { get: () => ['ja-JP', 'ja'] });
 """
+
+
+async def _extract_indeed_content(page) -> str:
+    """Indeed: 求人カードから data-jk を使った安定URLで構造化テキストを抽出"""
+    jobs = await page.evaluate("""
+        () => {
+            const cards = document.querySelectorAll(
+                '[data-jk], .job_seen_beacon, [data-testid="job-card"], .resultWithShelf'
+            );
+            return Array.from(cards).map(card => {
+                const jk = card.getAttribute('data-jk') ||
+                           (card.querySelector('[data-jk]') || {}).getAttribute('data-jk') || '';
+                const titleEl = card.querySelector('h2 a, [data-testid="job-title"] a, .jcs-JobTitle a');
+                const title = titleEl ? titleEl.innerText.trim() : '';
+                // data-jk があれば viewjob URL を構築（広告トラッキングURLを避ける）
+                const href = jk ? 'https://jp.indeed.com/viewjob?jk=' + jk
+                                 : (titleEl ? titleEl.href : '');
+                const company = (card.querySelector('.companyName, [data-testid="company-name"]') || {}).innerText || '';
+                const location = (card.querySelector('.companyLocation, [data-testid="text-location"]') || {}).innerText || '';
+                const salary = (card.querySelector('.salary-snippet, .metadata.salary-snippet-container, [data-testid="attribute_snippet_testid"]') || {}).innerText || '';
+                const desc = (card.querySelector('.job-snippet, [data-testid="job-snippet"]') || {}).innerText || '';
+                return { title, href, company, location, salary, desc };
+            }).filter(j => j.title);
+        }
+    """)
+
+    if not jobs:
+        # フォールバック: ページテキスト + リンク一覧
+        return await _extract_text_with_links(page, 'https://jp.indeed.com')
+
+    lines = []
+    for job in jobs:
+        lines.append(
+            f"タイトル: {job.get('title', '')}\n"
+            f"会社: {job.get('company', '')}\n"
+            f"場所: {job.get('location', '')}\n"
+            f"給与: {job.get('salary', '')}\n"
+            f"説明: {job.get('desc', '')[:200]}\n"
+            f"URL: {job.get('href', '')}\n---"
+        )
+    return '\n'.join(lines)
+
+
+async def _extract_text_with_links(page, base_url: str = '') -> str:
+    """ページテキスト + 求人関連リンクの一覧を返す"""
+    text = await page.inner_text('body')
+
+    # 求人っぽいリンクを抽出（href属性から直接取得）
+    links = await page.evaluate("""
+        (baseUrl) => {
+            const keywords = ['job', 'work', 'career', 'recruit', '求人', '仕事', 'apply'];
+            return Array.from(document.querySelectorAll('a[href]'))
+                .filter(a => {
+                    const href = a.href || '';
+                    const text = a.innerText.trim();
+                    return text.length > 2 && text.length < 100 &&
+                           keywords.some(k => href.includes(k) || text.includes(k));
+                })
+                .map(a => ({ text: a.innerText.trim(), href: a.href }))
+                .slice(0, 50);
+        }
+    """, base_url)
+
+    link_section = '\n'.join(f'{lk["text"]} → {lk["href"]}' for lk in links)
+    return f'{text[:8000]}\n\n--- 求人リンク ---\n{link_section}'
 
 
 async def _scrape(site_name: str, url: str, keywords: list[str], is_indeed: bool = False) -> dict:
@@ -54,7 +118,6 @@ async def _scrape(site_name: str, url: str, keywords: list[str], is_indeed: bool
             await page.goto(url, timeout=60000, wait_until='domcontentloaded')
 
             if is_indeed:
-                # Indeed: 求人カードが描画されるまで待機（最大15秒）
                 for sel in INDEED_JOB_SELECTORS:
                     try:
                         await page.wait_for_selector(sel, timeout=15000)
@@ -63,10 +126,9 @@ async def _scrape(site_name: str, url: str, keywords: list[str], is_indeed: bool
                         continue
                 else:
                     await page.wait_for_timeout(5000)
+                content = await _extract_indeed_content(page)
             else:
                 await page.wait_for_timeout(3000)
-
-                # 検索ボックスを探して検索実行
                 for selector in SEARCH_SELECTORS:
                     try:
                         element = await page.query_selector(selector)
@@ -78,14 +140,7 @@ async def _scrape(site_name: str, url: str, keywords: list[str], is_indeed: bool
                             break
                     except Exception:
                         continue
-
-            content = await page.inner_text('body')
-
-            # コンテンツ不足ならスクロールして再取得
-            if len(content) < 500:
-                await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-                await page.wait_for_timeout(2000)
-                content = await page.inner_text('body')
+                content = await _extract_text_with_links(page)
 
             return {
                 'site_name': site_name,
@@ -120,7 +175,7 @@ def scrape_all(sites: list[dict], keywords: list[str]) -> list[dict]:
 
             result = asyncio.run(_scrape(site['name'], site['url'], keywords, is_indeed))
 
-            if result.get('content') and len(result['content']) >= 500:
+            if result.get('content') and len(result['content']) >= 200:
                 break
 
         if 'error' in result and not result.get('content'):
