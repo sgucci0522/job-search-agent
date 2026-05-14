@@ -119,6 +119,9 @@ def write_results(jobs: list[dict]):
         range='結果!A2:J',
     ).execute()
 
+    # 応募状況保持行のURLセット（重複除外用）
+    kept_urls = {row[6] for row in kept_rows if len(row) > 6 and row[6]}
+
     new_rows = [
         [
             job.get('site_name', ''),
@@ -133,6 +136,7 @@ def write_results(jobs: list[dict]):
             '',  # 応募状況（空欄）
         ]
         for job in jobs
+        if job.get('url') not in kept_urls  # 応募状況保持済みURLは除外
     ]
 
     all_rows = kept_rows + new_rows
@@ -145,4 +149,5 @@ def write_results(jobs: list[dict]):
             body={'values': all_rows},
         ).execute()
 
-    print(f'新着 {len(new_rows)}件 / 応募状況保持 {len(kept_rows)}件 を書き込みました')
+    skipped = len(jobs) - len(new_rows)
+    print(f'新着 {len(new_rows)}件 / 応募状況保持 {len(kept_rows)}件 / 重複スキップ {skipped}件 を書き込みました')
